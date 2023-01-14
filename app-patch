@@ -1,0 +1,105 @@
+#!/bin/bash
+SCRIPTPATH="$( cd "$(dirname "$0")" ; pwd -P)"
+
+if [ $# -eq 0 ];then
+    echo "
+App Patch
+
+    patch one or more app.tar.gz to all SOCs.
+
+Usage:
+
+    app-patch <file1> <file2> ... <fileN> <url1> <url2> ... <urlN>
+
+Example:
+
+    app-patch 1.tar.gz 2.tar.gz http://example.com/3.tar.gz
+    app-patch https://mazu.nioint.com/nightly/force_bl0.6.1-dos6012/master/220113.0004/aarch64/can_app-main-220113.0023-aarch64-release-496c407-proto-0000000.tar.gz
+    app-patch ./can_app-main-220113.0023-aarch64-release-496c407-proto-0000000.tar.gz
+"
+    exit 0
+fi
+
+if ping -c 1 10.42.0.21 &> /dev/null
+then
+    ONLINE=yes
+fi
+
+APPS=()
+
+LOCAL_REPO=${HOME}/.mazu/app-patch
+for file in "$@"
+do
+
+    # check start with http, download if true
+    echo "$file" | grep -c ^http &> /dev/null
+    if [ $? -eq 0 ];then
+        echo [INFO] download $file to $LOCAL_REPO ...
+        wget $file -c -P $LOCAL_REPO --timeout=1 -q --show-progress
+        if [ $? -ne 0 ];then
+            echo "[ERROR] file not exist: $file"
+            continue
+        fi
+        local_file=${LOCAL_REPO}/"$(basename $file)"
+
+    # check local file exists
+    elif [ -e "$file" ];then
+        local_file=$file
+
+    # find file in local repo
+    elif [ -e "$LOCAL_REPO/$file" ];then
+        local_file="$LOCAL_REPO/$file"
+
+    else
+        echo "[ERROR] file not exist: $file"
+        continue
+    fi
+
+    # file should be ready
+    if [ ! -e "$local_file" ];then
+        echo "[ERROR] file not exist: $local_file"
+        continue
+    fi
+
+    echo [INFO] found ${local_file}
+    APPS+=("${local_file}")
+
+done
+
+if (( ${#APPS[@]} == 0 )); then
+    echo [INFO] nothing to patch, exit.
+    exit 1
+fi
+
+# offline mode, print stage2 instruction and exit
+if [ "$ONLINE" != "yes" ];then
+
+    echo "====================================================================================="
+    echo
+    echo "  You are now in offline mode. Connect MAZU then run the following instructions:"
+    echo
+    echo "  $0 ${APPS[@]}"
+    echo
+    echo "====================================================================================="
+    exit 0
+
+fi
+
+# online mode
+set -e
+for soc in 1 2 3 4
+do
+    echo [INFO] patch SOC${soc}...
+    sshpass -f ${SCRIPTPATH}/security ssh -o StrictHostKeyChecking=no mazu@10.42.0.2${soc} "sh -c 'rm -rf /tmp/app-patch && mkdir -p /tmp/app-patch' "
+    echo [INFO] ... prepare /tmp/app-patch ok.
+    for app in ${APPS[@]}
+    do
+        echo [INFO] ... patch $app on SOC${soc}
+        sshpass -f ${SCRIPTPATH}/security scp -o StrictHostKeyChecking=no -r $app mazu@10.42.0.2${soc}:/tmp/app-patch
+        REMOTE=/tmp/app-patch/$(basename $app)
+        sshpass -f ${SCRIPTPATH}/security ssh -o StrictHostKeyChecking=no mazu@10.42.0.2${soc} "sh -c 'cd /home/mazu/app && tar xmf $REMOTE' "
+    done
+done
+
+
+
